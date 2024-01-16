@@ -1,6 +1,6 @@
-//! A parser for the various binary filetypes used by Pandemic's ZeroEngine
+//! A parser for the various binary filetypes and containers used by Pandemic's ZeroEngine
 //!
-//! ZeroEngine was used to make games such as the original Star Wars Battlefront games
+//! ZeroEngine was used by Pandemic to make games such as the original Star Wars Battlefront games
 //!
 //! [explanation of supported file formats]
 //! [code examples]

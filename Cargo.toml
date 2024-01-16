@@ -3,6 +3,8 @@
 name = "libzeroengine"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/mcneb10/libzeroengine/"
+license = "LGPL-3.0-or-later"
 
 [lib]
 name = "libzeroengine"
