@@ -1,3 +1,4 @@
+// TODO: remove nom as dependency
 use nom::{
     bytes::complete::tag, combinator::map, multi::count, number::streaming::*, sequence::tuple,
     IResult, ToUsize,
@@ -6,8 +7,9 @@ use std::fs::File;
 use std::io::SeekFrom;
 use std::{fmt::Debug, io::prelude::*};
 
-use crate::mvs::Movie;
-use crate::script::Script;
+use crate::lvl::{Level, LevelError};
+use crate::mvs::{Movie, MovieError};
+use crate::script::{Script, ScriptError};
 
 /// This object represents the ucfb file
 #[derive(Debug, Clone)]
@@ -43,6 +45,8 @@ pub enum DecipheredChunk {
     Movie(Movie),
     /// Chunk that represents embedded ucfb
     UCFB(UCFBFile),
+    /// Chunk that represents a level
+    Level(Level),
 }
 
 /// ucfb chunk
@@ -57,7 +61,7 @@ pub struct Chunk {
 }
 
 /// Error returned by this namespace
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum UCFBError {
     /// File is too small to parse
     FileTooSmall,
@@ -66,11 +70,30 @@ pub enum UCFBError {
     /// File is not valid ucfb file
     NotAUCFBFile,
     /// Failure reading file
-    IOError,
+    IOError(std::io::Error),
     /// Failure to parse chunk file
     InvalidChunkName,
     /// Failure during alignment
     BadAlignment,
+}
+
+/// Error returned during chunk visitation
+#[derive(Debug)]
+pub enum VistError {
+    /// Error during script visitation
+    ScriptError(ScriptError),
+    /// Error during movie visitation
+    MovieError(MovieError),
+    /// Error during UCFB visitation
+    UCFBError(UCFBError),
+    /// Error during visiting subchunks of UCFB
+    UCFBSubchunkVisitationError(Box<VistError>),
+    /// Error During level visitation
+    LevelError(LevelError),
+    /// Error during visiting subchunks of level
+    LevelSubchunkVisitationError(Box<VistError>),
+    /// Unknow chunk name
+    InvalidChunk(String),
 }
 
 fn parse_header(input: &[u8]) -> IResult<&[u8], UCFBHeader> {
@@ -96,8 +119,9 @@ fn align_file_pointer(f: &mut File) -> Result<(), UCFBError> {
     .unwrap();
     // Don't align if aligned already
     if offset != 4 {
-        if f.seek(SeekFrom::Current(offset)).is_err() {
-            return Err(UCFBError::IOError);
+        match f.seek(SeekFrom::Current(offset)) {
+            Err(e) => return Err(UCFBError::IOError(e)),
+            Ok(_) => {}
         }
     }
     Ok(())
@@ -140,6 +164,7 @@ pub fn extract_chunks(file: &mut File) -> Result<Vec<Chunk>, UCFBError> {
 }
 
 /// Extract chunks from a byte array of chunks
+/// TODO: dont make buffer mutable
 pub fn extract_chunks_bytearray(buffer: &mut Vec<u8>) -> Result<Vec<Chunk>, UCFBError> {
     let mut current_chunk_header: ChunkHeader;
     let mut chunks: Vec<Chunk> = vec![];
@@ -174,17 +199,65 @@ pub fn extract_chunks_bytearray(buffer: &mut Vec<u8>) -> Result<Vec<Chunk>, UCFB
     Ok(chunks)
 }
 
+/// Try to figure out what the data stored in the chunks is and parse if possible
+pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VistError> {
+    for chunk in chunks {
+        chunk.deciphered_chunk = match chunk.header.name.as_str() {
+            "scr_" => Some(DecipheredChunk::Script(
+                match Script::from_chunk(chunk.clone()) {
+                    Ok(v) => v,
+                    Err(e) => return Err(VistError::ScriptError(e)),
+                },
+            )),
+            "\x60\x70\x1F\x2F" => Some(DecipheredChunk::Movie(
+                match Movie::from_chunk(chunk.clone()) {
+                    Ok(v) => v,
+                    Err(e) => return Err(VistError::MovieError(e)),
+                },
+            )),
+            "ucfb" => Some(DecipheredChunk::UCFB(UCFBFile {
+                header: UCFBHeader {
+                    size: chunk.header.size,
+                },
+                chunks: match extract_chunks_bytearray(&mut chunk.data) {
+                    Ok(mut v) => match visit_chunks_from_vec(&mut v) {
+                        Ok(_) => v,
+                        Err(e) => return Err(VistError::UCFBSubchunkVisitationError(Box::new(e))),
+                    },
+                    Err(e) => return Err(VistError::UCFBError(e)),
+                },
+            })),
+            "lvl_" => Some(DecipheredChunk::Level(
+                match Level::from_chunk(chunk.clone()) {
+                    Ok(mut v) => match visit_chunks_from_vec(&mut v.chunks) {
+                        Ok(_) => v,
+                        Err(e) => return Err(VistError::LevelSubchunkVisitationError(Box::new(e))),
+                    },
+                    Err(e) => {
+                        return Err(VistError::LevelError(e));
+                    }
+                },
+            )),
+            _ => {
+                return Err(VistError::InvalidChunk(chunk.header.name.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl UCFBFile {
     /// Create a new Script object from a file
     pub fn new(file_name: String) -> Result<Self, UCFBError> {
         let mut le_file = match File::open(file_name) {
             Ok(v) => v,
-            Err(_) => return Err(UCFBError::IOError),
+            Err(e) => return Err(UCFBError::IOError(e)),
         };
         let mut buffer: Vec<u8> = vec![0; 8];
         let header: UCFBHeader;
-        if le_file.read(&mut buffer).is_err() {
-            return Err(UCFBError::IOError);
+        match le_file.read(&mut buffer) {
+            Err(e) => return Err(UCFBError::IOError(e)),
+            Ok(_) => {}
         }
         (_, header) = match parse_header(&mut buffer) {
             Ok(v) => (v.0.to_vec(), v.1),
@@ -209,27 +282,7 @@ impl UCFBFile {
         })
     }
     /// Try to figure out what the data stored in the chunks is and parse if possible
-    pub fn visit_chunks(&mut self) {
-        for chunk in &mut self.chunks {
-            chunk.deciphered_chunk = match chunk.header.name.as_str() {
-                // TODO: error handling
-                "scr_" => Some(DecipheredChunk::Script(
-                    Script::from_chunk(chunk.clone()).unwrap(),
-                )),
-                "\x60\x70\x1F\x2F" => Some(DecipheredChunk::Movie(
-                    Movie::from_chunk(chunk.clone()).unwrap(),
-                )),
-                "ucfb" => Some(DecipheredChunk::UCFB(UCFBFile {
-                    header: UCFBHeader {
-                        size: chunk.header.size,
-                    },
-                    chunks: extract_chunks_bytearray(&mut chunk.data).unwrap(),
-                })),
-                _ => {
-                    println!("Unknown chunk type: {}", chunk.header.name);
-                    None
-                } // TODO: make the output controllable by the program
-            }
-        }
+    pub fn visit_chunks(&mut self) -> Result<(), VistError> {
+        visit_chunks_from_vec(&mut self.chunks)
     }
 }

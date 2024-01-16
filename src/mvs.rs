@@ -3,7 +3,7 @@ use crate::ucfb::*;
 #[derive(Debug, Clone)]
 pub struct Movie {
     /// A list of bink cutscene files
-    pub bink_files: Vec<Vec<u8>>
+    pub bink_files: Vec<Vec<u8>>,
 }
 
 // TODOs: .bik to regular video conversion with ffmpeg
@@ -15,12 +15,16 @@ pub enum MovieError {
     ChunkParseError,
     /// Movie doesn't have correct magic
     NotAMovie,
+    /// Movie is corrupted
+    CorruptedMovie,
 }
 
 impl Movie {
-    /// Deserialize script from chunk
+    /// Deserialize level from chunk
     pub fn from_chunk(chunk: Chunk) -> Result<Self, MovieError> {
-        if chunk.header.name != "\x60\x70\x1F\x2F" {return Err(MovieError::NotAMovie)}
+        if chunk.header.name != "\x60\x70\x1F\x2F" {
+            return Err(MovieError::NotAMovie);
+        }
         let mut data = chunk.data.clone();
         // Jar Jar
         let mut binks: Vec<Vec<u8>> = vec![];
@@ -33,7 +37,7 @@ impl Movie {
         while data.len() > offset {
             // Try to find the file
             // Should land on it immediately the first time
-            let sig = match data.get(offset..offset+3) {
+            let sig = match data.get(offset..offset + 3) {
                 Some(v) => v,
                 None => break,
             };
@@ -42,17 +46,21 @@ impl Movie {
                 continue;
             }
             // Extract the bik
-            let bik_size = u32::from_le_bytes(
-                match data.get(offset+4..offset+8) {
-                    Some(v) => v.try_into().unwrap(),
-                    None => continue,
+            let bik_size = u32::from_le_bytes(match data.get(offset + 4..offset + 8) {
+                Some(v) => v.try_into().unwrap(),
+                None => continue,
+            }) + 8;
+            binks.push(
+                match data.get(offset..(offset + (bik_size as usize) + 7)) {
+                    Some(v) => v,
+                    None => {
+                        return Err(MovieError::CorruptedMovie);
+                    }
                 }
-            ) + 8;
-            binks.push(data.get(offset..(offset+(bik_size as usize)+7)).unwrap().to_vec());
+                .to_vec(),
+            );
             offset += (bik_size as usize) + 8;
         }
-        Ok(Movie {
-            bink_files: binks
-        })
+        Ok(Movie { bink_files: binks })
     }
 }

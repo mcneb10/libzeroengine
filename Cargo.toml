@@ -1,3 +1,4 @@
+# TODO: rename using snake case
 [package]
 name = "libzeroengine"
 version = "0.1.0"
@@ -12,7 +13,11 @@ name = "dumpucfb"
 path = "src/dumpucfb.rs"
 
 [dependencies]
+bincode = "1.3.3"
+ddsfile = "0.5.2"
+image_dds = "0.4.0"
 nom = "7.1.3"
+serde = "1.0.195"
 
 [dependencies.lunify]
 version = "1.1.0"
