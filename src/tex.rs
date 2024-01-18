@@ -1,10 +1,10 @@
-/*
-TODO: this is annoying
 use crate::ucfb::*;
 use bincode::deserialize;
-use ddsfile::{Dds, FourCC, Header};
-use serde::{Deserialize, Serialize};
+use ddsfile::{D3DFormat, Dds, FourCC, Header};
+use image_dds::image::EncodableLayout;
+use serde::Deserialize;
 
+// TODO: sort this out with INFO chunks that are not exactly 16 bytes in size
 #[derive(Debug, Deserialize)]
 struct TextureHeader {
     format: u32,
@@ -12,18 +12,35 @@ struct TextureHeader {
     height: u16,
     depth: u16,
     mipmap_count: u16,
-    detail_bias: u32,
+    _detail_bias: u32,
 }
 
 impl TextureHeader {
-    fn to_dds_header(&self, format: FourCC) -> Header {
-        Header::new_d3d(self.height, self.width, self.depth, , self.mipmap_count, None //TODO?);
+    fn find_format(format: u32) -> Result<D3DFormat, HeaderError> {
+        Ok(match format {
+            // TODO: submit pull request to ddsfile to add function so I don't have to do this
+            // TODO: also add all the formats that zeroengine games use
+            FourCC::DXT1 => D3DFormat::DXT1,
+            23 => D3DFormat::R5G6B5,
+            _ => return Err(HeaderError::InvalidFourCC(format)),
+        })
+    }
+    fn to_dds_header(&self, format: D3DFormat) -> Result<Header, HeaderError> {
+        Ok(
+            match Header::new_d3d(
+                self.height as u32,
+                self.width as u32,
+                Some(self.depth as u32),
+                format,
+                Some(self.mipmap_count as u32),
+                None,
+            ) {
+                Ok(v) => v,
+                Err(e) => return Err(HeaderError::OtherError(e)),
+            },
+        )
     }
 }
-
-/// Types of textures contained in the `tex_` chunk
-#[derive(Debug, Clone, Copy)]
-pub enum TextureType {}
 
 /// Object that represents a singular texture
 #[derive(Debug, Clone)]
@@ -34,71 +51,186 @@ pub struct Texture {
     pub data: Vec<u8>,
 }
 
+/// Object that temporarily contains data required to instantiate `Dds`
+/// This is necessary because Dds is not cloneable
+#[derive(Debug, Clone)]
+struct DdsTemporaryInformationStorageObject {
+    /// The dds header
+    header: Header,
+    /// The dds pixel data
+    data: Vec<u8>,
+}
+
 /// Object that represents a texture container
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TextureContainer {
     /// The texture name
     pub name: String,
     /// List of textures
-    pub formats: Vec<Dds>,
+    formats: Vec<DdsTemporaryInformationStorageObject>,
+}
+
+/// Errors produced during header parsing
+#[derive(Debug)]
+pub enum HeaderError {
+    /// FourCC is not recognized.
+    /// Some files may cause this error as all formats are not implemented yet
+    InvalidFourCC(u32),
+    /// Some other error happened during parsing the header
+    OtherError(ddsfile::Error),
 }
 
 /// Errors produced by this class
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum TextureError {
+    /// Chunk is not a texture
     NotATexture,
+    /// Error parsing dds header
+    HeaderError(HeaderError),
+    /// Error parsing chunk
+    ChunkParseError(UCFBError),
+    /// Error during parsing of DDS info
+    TextureInfoHeaderParseFailure(bincode::Error),
+    /// General texture parsing error
+    TextureParseError,
 }
 
 impl TextureContainer {
-    fn make_dds(format: FourCC, data: Vec<u8>) -> Dds {
-        Dds {
-            header: Header {},
-            header10: None,
-            data: data,
-        }
-    }
+    // TODO: error handling
+    /// Get texture from chunk
     pub fn from_chunk(chunk: Chunk) -> Result<Self, TextureError> {
         // Warning: this format is idiotic and whoever devised it is too
         if chunk.header.name != "tex_" {
             return Err(TextureError::NotATexture);
         }
-        let subchunks = extract_chunks_bytearray(&mut chunk.data)?;
+        let subchunks = match extract_chunks_bytearray(&mut chunk.data.clone()) {
+            Ok(v) => v,
+            Err(e) => return Err(TextureError::ChunkParseError(e)),
+        };
         // NAME chunk
-        let name = subchunks
-            .get(0)?
-            .data
-            .iter()
-            .map(|&c| char::from(c))
-            .collect();
+        let mut name: String = match subchunks.get(0) {
+            Some(v) => v,
+            None => return Err(TextureError::TextureParseError),
+        }
+        .data
+        .iter()
+        .map(|&c| char::from(c))
+        .collect();
+        name = name.replace("\0", "");
         // INFO chunk
-        let format_chunk_data = subchunks.get(1)?.data;
-        let format_count = u32::from_le_bytes(format_chunk_data.get(0..4)?.try_into()?);
-        let mut formats: Vec<Dds> = vec![];
+        let format_chunk_data = match subchunks.get(1) {
+            Some(v) => v,
+            None => return Err(TextureError::TextureParseError),
+        }
+        .data
+        .clone();
+        let format_count = u32::from_le_bytes(
+            match (match format_chunk_data.get(0..4) {
+                Some(v) => v,
+                None => return Err(TextureError::TextureParseError),
+            })
+            .try_into()
+            {
+                Ok(v) => v,
+                Err(_) => return Err(TextureError::TextureParseError),
+            },
+        );
+        let mut formats: Vec<DdsTemporaryInformationStorageObject> = vec![];
         // Read the formats
         for i in 0..format_count {
-            let mut texture_format_chunk = subchunks.get(2 + i as usize)?;
+            let texture_format_chunk = match subchunks.get(2 + i as usize) {
+                Some(v) => v,
+                None => return Err(TextureError::TextureParseError),
+            };
             let texture_format_subchunks =
-                extract_chunks_bytearray(&mut texture_format_chunk.data)?;
+                match extract_chunks_bytearray(&mut texture_format_chunk.data.clone()) {
+                    Ok(v) => v,
+                    Err(e) => return Err(TextureError::ChunkParseError(e)),
+                };
             // INFO chunk (format info)
-            let info = texture_format_subchunks.get(0).unwrap().data;
+            /*let info = match texture_format_subchunks.get(0) {
+                Some(v) => v,
+                None => return Err(TextureError::TextureParseError),
+            }
+            .data.clone();*/
             // FACE chunk
-            let face = texture_format_subchunks.get(1).unwrap().data;
-            let face_subchunks = extract_chunks_bytearray(&mut face).unwrap();
+            let face = match texture_format_subchunks.get(1) {
+                Some(v) => v,
+                None => return Err(TextureError::TextureParseError),
+            }
+            .data
+            .clone();
+            let face_subchunks = match extract_chunks_bytearray(&mut face.clone()) {
+                Ok(v) => v,
+                Err(e) => return Err(TextureError::ChunkParseError(e)),
+            };
             // FACE.LVL_ chunk
-            let lvl_subchunks =
-                extract_chunks_bytearray(&mut face_subchunks.get(0).unwrap().data).unwrap();
+            let lvl_subchunks = match extract_chunks_bytearray(
+                &mut match face_subchunks.get(0) {
+                    Some(v) => v,
+                    None => return Err(TextureError::TextureParseError),
+                }
+                .data
+                .clone(),
+            ) {
+                Ok(v) => v,
+                Err(e) => return Err(TextureError::ChunkParseError(e)),
+            };
             // FACE.LVL_.INFO chunk (more format info)
-            let info2 = lvl_subchunks.get(0).unwrap().data;
+            let info2: TextureHeader = match deserialize(
+                match texture_format_subchunks.get(0) {
+                    Some(v) => v,
+                    None => return Err(TextureError::TextureParseError),
+                }
+                .data
+                .as_bytes(),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    //return Err(TextureError::TextureInfoHeaderParseFailure(e));
+                    // Skip, should add a log message here
+                    //println!("Skipped bc of err: {:?}", e);
+                    continue;
+                }
+            };
             // FACE.LVL_.BODY chunk (texture data)
-            let body = lvl_subchunks.get(0).unwrap().data;
+            let body = lvl_subchunks.get(1).unwrap().data.clone();
+            let format_of_the_format: D3DFormat = match TextureHeader::find_format(info2.format) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Skip, should add a log message here
+                    //println!("Skipped bc of err: {:?}", e);
+                    continue;
+                }
+            };
 
-            //let format: FourCC = FourCC(u32::from_le_bytes(format_chunk_data.get(offset..offset+4)?.try_into()?));
-            formats.push(Self::make_dds(format, body));
+            formats.push(DdsTemporaryInformationStorageObject {
+                header: match info2.to_dds_header(format_of_the_format) {
+                    Ok(v) => v,
+                    Err(e) => return Err(TextureError::HeaderError(e)),
+                },
+                data: body,
+            });
         }
         Ok(TextureContainer {
             name: name,
             formats: formats,
         })
     }
+
+    // TODO: send pull request to ddsfile to make Dds cloneable?
+    /// Convert the internal temporary storage object to Dds objects
+    pub fn get_formats_dds_vec(&self) -> Vec<Dds> {
+        let mut formats: Vec<Dds> = vec![];
+
+        for format in self.formats.clone() {
+            formats.push(Dds {
+                header: format.header,
+                header10: None,
+                data: format.data,
+            });
+        }
+
+        return formats;
+    }
 }
-*/

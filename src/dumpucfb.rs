@@ -1,7 +1,6 @@
-use libzeroengine::{
-    script::Script,
-    ucfb::{Chunk, DecipheredChunk, UCFBFile},
-};
+use ddsfile::Dds;
+use image_dds::image_from_dds;
+use libzeroengine::ucfb::{Chunk, DecipheredChunk, UCFBFile, VisitError};
 use std::{env, fs, path::Path, process::exit};
 
 fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
@@ -10,9 +9,10 @@ fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
             .clone()
             .deciphered_chunk
             .and_then(|c| -> Option<DecipheredChunk> {
+                // TODO: make this print chunk type
+                println!("Found something at chunk #{}", /*c,*/ i);
                 match c {
                     DecipheredChunk::Script(x) => {
-                        println!("Found script {} with info {}", x.name, x.info);
                         fs::create_dir_all(prefix).unwrap();
                         fs::write(
                             format!("{}{}.luac", prefix, x.name),
@@ -21,7 +21,6 @@ fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
                         .unwrap();
                     }
                     DecipheredChunk::Movie(x) => {
-                        println!("Found movie container at chunk #{}", i);
                         for (j, movie) in x.bink_files.iter().enumerate() {
                             fs::create_dir_all(format!("{}/mvs_block_{}/", prefix, i)).unwrap();
                             fs::write(format!("{}/mvs_block_{}/movie_{}.bik", prefix, i, j), movie)
@@ -33,6 +32,22 @@ fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
                     }
                     DecipheredChunk::Level(x) => {
                         handle_chunks(x.chunks, format!("{}/lvl_{}/", prefix, i).as_str());
+                    }
+                    DecipheredChunk::Texture(x) => {
+                        fs::create_dir_all(prefix).unwrap();
+                        let formats: Vec<Dds> = x.get_formats_dds_vec();
+                        /*for format in formats {
+                            let result =
+                                image_from_dds(&format, format.get_num_mipmap_levels()).unwrap();
+                            // TODO: allow user to choose model/image format?
+                            result.save(format!("{}/{}.tga", prefix, x.name)).unwrap();
+                        }*/
+                        // Idk, try the first one
+                        let format = formats.get(0).unwrap();
+                        let result =
+                            image_from_dds(&format, format.get_num_mipmap_levels() -1).unwrap();
+                        // TODO: allow user to choose model/image format?
+                        result.save(format!("{}/{}.tga", prefix, x.name)).unwrap();
                     }
                 };
                 None

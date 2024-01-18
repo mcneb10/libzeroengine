@@ -16,7 +16,7 @@ pub enum LevelError {
 }
 
 impl Level {
-    /// Deserialize script from chunk
+    /// Deserialize level from chunk
     pub fn from_chunk(chunk: Chunk) -> Result<Self, LevelError> {
         if chunk.header.name != "lvl_" {
             return Err(LevelError::NotALevel);

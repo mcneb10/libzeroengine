@@ -20,7 +20,7 @@ pub enum MovieError {
 }
 
 impl Movie {
-    /// Deserialize level from chunk
+    /// Deserialize movie from chunk
     pub fn from_chunk(chunk: Chunk) -> Result<Self, MovieError> {
         if chunk.header.name != "\x60\x70\x1F\x2F" {
             return Err(MovieError::NotAMovie);

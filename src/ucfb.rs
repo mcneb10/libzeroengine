@@ -10,6 +10,7 @@ use std::{fmt::Debug, io::prelude::*};
 use crate::lvl::{Level, LevelError};
 use crate::mvs::{Movie, MovieError};
 use crate::script::{Script, ScriptError};
+use crate::tex::{TextureContainer, TextureError};
 
 /// This object represents the ucfb file
 #[derive(Debug, Clone)]
@@ -47,6 +48,8 @@ pub enum DecipheredChunk {
     UCFB(UCFBFile),
     /// Chunk that represents a level
     Level(Level),
+    /// Chunk that represents a texture
+    Texture(TextureContainer),
 }
 
 /// ucfb chunk
@@ -79,7 +82,7 @@ pub enum UCFBError {
 
 /// Error returned during chunk visitation
 #[derive(Debug)]
-pub enum VistError {
+pub enum VisitError {
     /// Error during script visitation
     ScriptError(ScriptError),
     /// Error during movie visitation
@@ -87,11 +90,13 @@ pub enum VistError {
     /// Error during UCFB visitation
     UCFBError(UCFBError),
     /// Error during visiting subchunks of UCFB
-    UCFBSubchunkVisitationError(Box<VistError>),
+    UCFBSubchunkVisitationError(Box<VisitError>),
     /// Error During level visitation
     LevelError(LevelError),
     /// Error during visiting subchunks of level
-    LevelSubchunkVisitationError(Box<VistError>),
+    LevelSubchunkVisitationError(Box<VisitError>),
+    /// Error during texture visitation
+    TextureVisitationError(TextureError),
     /// Unknow chunk name
     InvalidChunk(String),
 }
@@ -200,19 +205,19 @@ pub fn extract_chunks_bytearray(buffer: &mut Vec<u8>) -> Result<Vec<Chunk>, UCFB
 }
 
 /// Try to figure out what the data stored in the chunks is and parse if possible
-pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VistError> {
+pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VisitError> {
     for chunk in chunks {
         chunk.deciphered_chunk = match chunk.header.name.as_str() {
             "scr_" => Some(DecipheredChunk::Script(
                 match Script::from_chunk(chunk.clone()) {
                     Ok(v) => v,
-                    Err(e) => return Err(VistError::ScriptError(e)),
+                    Err(e) => return Err(VisitError::ScriptError(e)),
                 },
             )),
             "\x60\x70\x1F\x2F" => Some(DecipheredChunk::Movie(
                 match Movie::from_chunk(chunk.clone()) {
                     Ok(v) => v,
-                    Err(e) => return Err(VistError::MovieError(e)),
+                    Err(e) => return Err(VisitError::MovieError(e)),
                 },
             )),
             "ucfb" => Some(DecipheredChunk::UCFB(UCFBFile {
@@ -222,32 +227,44 @@ pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VistError> {
                 chunks: match extract_chunks_bytearray(&mut chunk.data) {
                     Ok(mut v) => match visit_chunks_from_vec(&mut v) {
                         Ok(_) => v,
-                        Err(e) => return Err(VistError::UCFBSubchunkVisitationError(Box::new(e))),
+                        Err(e) => return Err(VisitError::UCFBSubchunkVisitationError(Box::new(e))),
                     },
-                    Err(e) => return Err(VistError::UCFBError(e)),
+                    Err(e) => return Err(VisitError::UCFBError(e)),
                 },
             })),
             "lvl_" => Some(DecipheredChunk::Level(
                 match Level::from_chunk(chunk.clone()) {
                     Ok(mut v) => match visit_chunks_from_vec(&mut v.chunks) {
                         Ok(_) => v,
-                        Err(e) => return Err(VistError::LevelSubchunkVisitationError(Box::new(e))),
+                        Err(e) => {
+                            return Err(VisitError::LevelSubchunkVisitationError(Box::new(e)))
+                        }
                     },
                     Err(e) => {
-                        return Err(VistError::LevelError(e));
+                        return Err(VisitError::LevelError(e));
                     }
                 },
             )),
+            "tex_" => Some(DecipheredChunk::Texture(
+                match TextureContainer::from_chunk(chunk.clone()) {
+                    Ok(v) => v,
+                    Err(e) => return Err(VisitError::TextureVisitationError(e)),
+                },
+            )),
             _ => {
-                return Err(VistError::InvalidChunk(chunk.header.name.clone()));
+                return Err(VisitError::InvalidChunk(chunk.header.name.clone()));
             }
+        };
+        if chunk.header.name == "tex_" {
+                            // Return for now
+                            return Ok(());
         }
     }
     Ok(())
 }
 
 impl UCFBFile {
-    /// Create a new Script object from a file
+    /// Create a new object from a file
     pub fn new(file_name: String) -> Result<Self, UCFBError> {
         let mut le_file = match File::open(file_name) {
             Ok(v) => v,
@@ -282,7 +299,7 @@ impl UCFBFile {
         })
     }
     /// Try to figure out what the data stored in the chunks is and parse if possible
-    pub fn visit_chunks(&mut self) -> Result<(), VistError> {
+    pub fn visit_chunks(&mut self) -> Result<(), VisitError> {
         visit_chunks_from_vec(&mut self.chunks)
     }
 }
