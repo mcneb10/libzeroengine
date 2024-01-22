@@ -51,13 +51,9 @@ impl Movie {
                 None => continue,
             }) + 8;
             binks.push(
-                match data.get(offset..(offset + (bik_size as usize) + 7)) {
-                    Some(v) => v,
-                    None => {
-                        return Err(MovieError::CorruptedMovie);
-                    }
-                }
-                .to_vec(),
+                data.get(offset..(offset + (bik_size as usize) + 7))
+                    .ok_or(MovieError::CorruptedMovie)?
+                    .to_vec(),
             );
             offset += (bik_size as usize) + 8;
         }

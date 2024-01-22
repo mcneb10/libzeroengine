@@ -9,6 +9,7 @@ use std::{fmt::Debug, io::prelude::*};
 
 use crate::lvl::{Level, LevelError};
 use crate::mvs::{Movie, MovieError};
+use crate::prop::{PropertyContainer, PropertyError};
 use crate::script::{Script, ScriptError};
 use crate::tex::{TextureContainer, TextureError};
 
@@ -50,6 +51,8 @@ pub enum DecipheredChunk {
     Level(Level),
     /// Chunk that represents a texture
     Texture(TextureContainer),
+    /// Chunk that represents a class
+    PropertyContainer(PropertyContainer),
 }
 
 /// ucfb chunk
@@ -97,6 +100,8 @@ pub enum VisitError {
     LevelSubchunkVisitationError(Box<VisitError>),
     /// Error during texture visitation
     TextureVisitationError(TextureError),
+    /// Error during property container/class visitation
+    PropertyContainerVisitError(PropertyError),
     /// Unknow chunk name
     InvalidChunk(String),
 }
@@ -209,16 +214,10 @@ pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VisitError> 
     for chunk in chunks {
         chunk.deciphered_chunk = match chunk.header.name.as_str() {
             "scr_" => Some(DecipheredChunk::Script(
-                match Script::from_chunk(chunk.clone()) {
-                    Ok(v) => v,
-                    Err(e) => return Err(VisitError::ScriptError(e)),
-                },
+                Script::from_chunk(chunk.clone()).map_err(|e| VisitError::ScriptError(e))?,
             )),
             "\x60\x70\x1F\x2F" => Some(DecipheredChunk::Movie(
-                match Movie::from_chunk(chunk.clone()) {
-                    Ok(v) => v,
-                    Err(e) => return Err(VisitError::MovieError(e)),
-                },
+                Movie::from_chunk(chunk.clone()).map_err(|e| VisitError::MovieError(e))?,
             )),
             "ucfb" => Some(DecipheredChunk::UCFB(UCFBFile {
                 header: UCFBHeader {
@@ -246,19 +245,18 @@ pub fn visit_chunks_from_vec(chunks: &mut Vec<Chunk>) -> Result<(), VisitError> 
                 },
             )),
             "tex_" => Some(DecipheredChunk::Texture(
-                match TextureContainer::from_chunk(chunk.clone()) {
-                    Ok(v) => v,
-                    Err(e) => return Err(VisitError::TextureVisitationError(e)),
-                },
+                TextureContainer::from_chunk(chunk.clone())
+                    .map_err(|e| VisitError::TextureVisitationError(e))?,
+            )),
+            "entc" | "expc" | "ordc" | "wpnc" => Some(DecipheredChunk::PropertyContainer(
+                PropertyContainer::from_chunk(chunk.clone())
+                    .map_err(|e| VisitError::PropertyContainerVisitError(e))?,
             )),
             _ => {
-                return Err(VisitError::InvalidChunk(chunk.header.name.clone()));
+                //return Err(VisitError::InvalidChunk(chunk.header.name.clone()));
+                None
             }
         };
-        if chunk.header.name == "tex_" {
-                            // Return for now
-                            return Ok(());
-        }
     }
     Ok(())
 }

@@ -56,6 +56,7 @@ impl Script {
     }
     /// Convert the lua 5.0 bytecode to lua 5.1 so it can be decompiled
     pub fn get_lua_51_bytecode_from_50(&self) -> Result<Vec<u8>, LunifyError> {
+        // TODO: numbers converted seem to be wrong
         let bytecode: &[u8] = &self.body;
         let fmt = Format {
             endianness: lunify::Endianness::Little,

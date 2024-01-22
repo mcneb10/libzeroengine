@@ -1,6 +1,6 @@
 use ddsfile::Dds;
 use image_dds::image_from_dds;
-use libzeroengine::ucfb::{Chunk, DecipheredChunk, UCFBFile, VisitError};
+use libzeroengine::ucfb::{Chunk, DecipheredChunk, UCFBFile};
 use std::{env, fs, path::Path, process::exit};
 
 fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
@@ -43,11 +43,25 @@ fn handle_chunks(chunks: Vec<Chunk>, prefix: &str) {
                             result.save(format!("{}/{}.tga", prefix, x.name)).unwrap();
                         }*/
                         // Idk, try the first one
+                        if formats.len() == 0 {
+                            println!("Couldn't find any usable textures for {}, skipping", x.name);
+                            return None;
+                        }
                         let format = formats.get(0).unwrap();
-                        let result =
-                            image_from_dds(&format, format.get_num_mipmap_levels() -1).unwrap();
+                        let result = match image_from_dds(
+                            &format, /*format.get_num_mipmap_levels() -1*/ 0,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                println!("Texture {} failed with error {:?}, skipping", x.name, e);
+                                return None;
+                            }
+                        };
                         // TODO: allow user to choose model/image format?
                         result.save(format!("{}/{}.tga", prefix, x.name)).unwrap();
+                    }
+                    DecipheredChunk::PropertyContainer(x) => {
+                        fs::write(format!("{}/{}.odf", prefix, x.name), x.get_odf()).unwrap();
                     }
                 };
                 None

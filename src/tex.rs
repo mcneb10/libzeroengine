@@ -4,7 +4,6 @@ use ddsfile::{D3DFormat, Dds, FourCC, Header};
 use image_dds::image::EncodableLayout;
 use serde::Deserialize;
 
-// TODO: sort this out with INFO chunks that are not exactly 16 bytes in size
 #[derive(Debug, Deserialize)]
 struct TextureHeader {
     format: u32,
@@ -21,24 +20,43 @@ impl TextureHeader {
             // TODO: submit pull request to ddsfile to add function so I don't have to do this
             // TODO: also add all the formats that zeroengine games use
             FourCC::DXT1 => D3DFormat::DXT1,
+            20 => D3DFormat::R8G8B8,
+            21 => D3DFormat::A8R8G8B8,
+            22 => D3DFormat::X8R8G8B8,
             23 => D3DFormat::R5G6B5,
+            24 => D3DFormat::X1R5G5B5,
+            25 => D3DFormat::A1R5G5B5,
+            26 => D3DFormat::A4R4G4B4,
+            FourCC::DXT2 => D3DFormat::DXT2,
+            FourCC::DXT3 => D3DFormat::DXT3,
+            FourCC::DXT4 => D3DFormat::DXT4,
+            FourCC::DXT5 => D3DFormat::DXT5,
+            FourCC::R8G8_B8G8 => D3DFormat::R8G8_B8G8,
+            FourCC::G8R8_G8B8 => D3DFormat::G8R8_G8B8,
+            FourCC::A16B16G16R16 => D3DFormat::A16B16G16R16,
+            FourCC::Q16W16V16U16 => D3DFormat::Q16W16V16U16,
+            FourCC::R16F => D3DFormat::R16F,
+            FourCC::G16R16F => D3DFormat::G16R16F,
+            FourCC::A16B16G16R16F => D3DFormat::A16B16G16R16F,
+            FourCC::R32F => D3DFormat::R32F,
+            FourCC::G32R32F => D3DFormat::G32R32F,
+            FourCC::A32B32G32R32F => D3DFormat::A32B32G32R32F,
+            FourCC::UYVY => D3DFormat::UYVY,
+            FourCC::YUY2 => D3DFormat::YUY2,
+            FourCC::CXV8U8 => D3DFormat::CXV8U8,
             _ => return Err(HeaderError::InvalidFourCC(format)),
         })
     }
     fn to_dds_header(&self, format: D3DFormat) -> Result<Header, HeaderError> {
-        Ok(
-            match Header::new_d3d(
-                self.height as u32,
-                self.width as u32,
-                Some(self.depth as u32),
-                format,
-                Some(self.mipmap_count as u32),
-                None,
-            ) {
-                Ok(v) => v,
-                Err(e) => return Err(HeaderError::OtherError(e)),
-            },
+        Ok(Header::new_d3d(
+            self.height as u32,
+            self.width as u32,
+            Some(self.depth as u32),
+            format,
+            Some(self.mipmap_count as u32),
+            None,
         )
+        .map_err(|e| HeaderError::OtherError(e))?)
     }
 }
 
@@ -103,10 +121,8 @@ impl TextureContainer {
         if chunk.header.name != "tex_" {
             return Err(TextureError::NotATexture);
         }
-        let subchunks = match extract_chunks_bytearray(&mut chunk.data.clone()) {
-            Ok(v) => v,
-            Err(e) => return Err(TextureError::ChunkParseError(e)),
-        };
+        let subchunks = extract_chunks_bytearray(&mut chunk.data.clone())
+            .map_err(|e| TextureError::ChunkParseError(e))?;
         // NAME chunk
         let mut name: String = match subchunks.get(0) {
             Some(v) => v,
@@ -125,15 +141,12 @@ impl TextureContainer {
         .data
         .clone();
         let format_count = u32::from_le_bytes(
-            match (match format_chunk_data.get(0..4) {
+            (match format_chunk_data.get(0..4) {
                 Some(v) => v,
                 None => return Err(TextureError::TextureParseError),
             })
             .try_into()
-            {
-                Ok(v) => v,
-                Err(_) => return Err(TextureError::TextureParseError),
-            },
+            .map_err(|_| TextureError::TextureParseError)?,
         );
         let mut formats: Vec<DdsTemporaryInformationStorageObject> = vec![];
         // Read the formats
@@ -143,10 +156,8 @@ impl TextureContainer {
                 None => return Err(TextureError::TextureParseError),
             };
             let texture_format_subchunks =
-                match extract_chunks_bytearray(&mut texture_format_chunk.data.clone()) {
-                    Ok(v) => v,
-                    Err(e) => return Err(TextureError::ChunkParseError(e)),
-                };
+                extract_chunks_bytearray(&mut texture_format_chunk.data.clone())
+                    .map_err(|e| TextureError::ChunkParseError(e))?;
             // INFO chunk (format info)
             /*let info = match texture_format_subchunks.get(0) {
                 Some(v) => v,
@@ -160,22 +171,18 @@ impl TextureContainer {
             }
             .data
             .clone();
-            let face_subchunks = match extract_chunks_bytearray(&mut face.clone()) {
-                Ok(v) => v,
-                Err(e) => return Err(TextureError::ChunkParseError(e)),
-            };
+            let face_subchunks = extract_chunks_bytearray(&mut face.clone())
+                .map_err(|e| TextureError::ChunkParseError(e))?;
             // FACE.LVL_ chunk
-            let lvl_subchunks = match extract_chunks_bytearray(
+            let lvl_subchunks = extract_chunks_bytearray(
                 &mut match face_subchunks.get(0) {
                     Some(v) => v,
                     None => return Err(TextureError::TextureParseError),
                 }
                 .data
                 .clone(),
-            ) {
-                Ok(v) => v,
-                Err(e) => return Err(TextureError::ChunkParseError(e)),
-            };
+            )
+            .map_err(|e| TextureError::ChunkParseError(e))?;
             // FACE.LVL_.INFO chunk (more format info)
             let info2: TextureHeader = match deserialize(
                 match texture_format_subchunks.get(0) {
@@ -205,10 +212,9 @@ impl TextureContainer {
             };
 
             formats.push(DdsTemporaryInformationStorageObject {
-                header: match info2.to_dds_header(format_of_the_format) {
-                    Ok(v) => v,
-                    Err(e) => return Err(TextureError::HeaderError(e)),
-                },
+                header: info2
+                    .to_dds_header(format_of_the_format)
+                    .map_err(|e| TextureError::HeaderError(e))?,
                 data: body,
             });
         }
